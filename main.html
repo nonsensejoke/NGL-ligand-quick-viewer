@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDF Molecule Viewer (Final Fix)</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; background-color: #f4f4f4; }
+        h1 { text-align: center; margin: 10px 0; color: #333; }
+        #controls { padding: 10px; background-color: #e0e0e0; border-bottom: 1px solid #ccc; display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: center; }
+        .control-group { display: flex; gap: 10px; align-items: center; }
+        label { cursor: pointer; }
+        button { padding: 5px 10px; border: 1px solid #999; border-radius: 4px; cursor: pointer; background-color: #f0f0f0; }
+        button:disabled { cursor: not-allowed; opacity: 0.5; }
+        #viewport { flex-grow: 1; width: 100%; background-color: #fff; }
+        #frame_info { font-weight: bold; min-width: 80px; text-align: center; }
+        #title_display { background-color: #fffacd; padding: 10px; border-top: 1px solid #ccc; text-align: center; font-weight: bold; }
+        #log_area { background-color: #f8f8f8; border-top: 1px solid #ccc; padding: 10px; display: none; }
+        #log_content { display: flex; gap: 20px; height: 200px; }
+        .log_section { flex: 1; }
+        .log_section h3 { margin: 0 0 10px 0; text-align: center; }
+        .log_section .log_list { height: 160px; overflow-y: auto; border: 1px solid #ddd; padding: 5px; background-color: white; font-family: monospace; font-size: 12px; }
+        #accept_section h3 { color: #008000; }
+        #decline_section h3 { color: #cc0000; }
+    </style>
+</head>
+<body>
+    <h1>SDF Molecule Viewer (Final Fix)</h1>
+
+    <div id="controls">
+        <div class="control-group">
+            <label for="sdf_file"><strong>1. Upload SDF File:</strong></label>
+            <input type="file" id="sdf_file" accept=".sdf,.sd">
+        </div>
+        <div class="control-group">
+            <strong>2. Display Options:</strong>
+            <label><input type="checkbox" id="toggle_symbols"> Show Atom Symbols</label>
+            <label><input type="checkbox" id="toggle_indices"> Show Atom Indices (1-based)</label>
+            <label><input type="checkbox" id="toggle_title" checked> Show Frame Title</label>
+        </div>
+        <div class="control-group">
+            <strong>3. Frame Navigation:</strong>
+            <button id="prev_btn" disabled>Previous (A)</button>
+            <span id="frame_info">No file loaded</span>
+            <button id="next_btn" disabled>Next (D)</button>
+        </div>
+        <div class="control-group">
+            <strong>4. Log Area:</strong>
+            <label><input type="checkbox" id="toggle_log"> Show Log Area</label>
+            <span style="margin-left: 15px; font-size: 12px; color: #666;">Hotkeys: H=Accept, U=Decline</span>
+        </div>
+    </div>
+
+    <div id="title_display">Frame Title: Not loaded</div>
+    <div id="viewport"></div>
+    <div id="log_area">
+        <div id="log_content">
+            <div class="log_section" id="accept_section">
+                <h3>Accept (H)</h3>
+                <div class="log_list" id="accept_list"></div>
+            </div>
+            <div class="log_section" id="decline_section">
+                <h3>Decline (U)</h3>
+                <div class="log_list" id="decline_list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- NGL Viewer Library -->
+    <script src="https://unpkg.com/ngl@2.0.0-dev.38/dist/ngl.js"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const stage = new NGL.Stage("viewport", { backgroundColor: 'white' });
+            window.addEventListener("resize", () => stage.handleResize(), false);
+
+            const fileInput = document.getElementById("sdf_file");
+            const toggleSymbols = document.getElementById("toggle_symbols");
+            const toggleIndices = document.getElementById("toggle_indices");
+            const toggleTitle = document.getElementById("toggle_title");
+            const toggleLog = document.getElementById("toggle_log");
+            const prevBtn = document.getElementById("prev_btn");
+            const nextBtn = document.getElementById("next_btn");
+            const frameInfo = document.getElementById("frame_info");
+            const titleDisplay = document.getElementById("title_display");
+            const logArea = document.getElementById("log_area");
+            const acceptList = document.getElementById("accept_list");
+            const declineList = document.getElementById("decline_list");
+
+            let currentComponent = null;
+            let indexLabelComponent = null; // shape-based labels component
+            let totalFrames = 0;
+            let currentFrame = 0;
+            let frameTitles = [];
+
+            fileInput.addEventListener("change", function(event) {
+                const file = event.target.files[0];
+                if (file) {
+                    stage.removeAllComponents();
+                    toggleSymbols.checked = false;
+                    toggleIndices.checked = false;
+                    
+                    stage.loadFile(file).then(function (o) {
+                        currentComponent = o;
+                        totalFrames = o.structure.modelStore.count;
+                        currentFrame = 0;
+                        
+                        // Extract frame titles from SDF data
+                        frameTitles = [];
+                        const reader = new FileReader();
+                        reader.onload = function(e) {
+                            const sdfContent = e.target.result;
+                            const frames = sdfContent.split('$$$$');
+                            for (let i = 0; i < frames.length - 1; i++) {
+                                const frameLines = frames[i].trim().split('\n');
+                                if (frameLines.length > 0) {
+                                    const title = frameLines[0].trim() || `Frame ${i + 1}`;
+                                    frameTitles.push(title);
+                                }
+                            }
+                            // Ensure we have titles for all frames
+                            while (frameTitles.length < totalFrames) {
+                                frameTitles.push(`Frame ${frameTitles.length + 1}`);
+                            }
+                            
+                            renderCurrentFrame();
+                            updateFrameUI();
+                            updateTitleDisplay();
+                        };
+                        reader.readAsText(file);
+                    });
+                }
+            });
+
+            function renderCurrentFrame() {
+                if (!currentComponent) return;
+
+                currentComponent.removeAllRepresentations();
+                if (indexLabelComponent) { indexLabelComponent.dispose(); indexLabelComponent = null; }
+
+                // For multi-model SDF files, use model index for selection
+                const selection = totalFrames > 1 ? `/${currentFrame}` : "";
+                
+                // Debug logging
+                console.log("=== Frame Debug Info ===");
+                console.log("currentFrame:", currentFrame);
+                console.log("totalFrames:", totalFrames);
+                console.log("selection:", selection);
+
+                const schemeId = NGL.ColormakerRegistry.addSelectionScheme([
+                  ["purple", "aromatic"],
+                  ["element", "*"]
+                ]);
+
+                // Add the main ball+stick representation
+                currentComponent.addRepresentation("ball+stick", {
+                    multipleBond: "symmetric",
+                    sele: selection || "all",
+                    color: schemeId
+                });
+
+                // Add labels for atom symbols if checked
+                if (toggleSymbols.checked) {
+                    currentComponent.addRepresentation("label", {
+                        labelType: "element",
+                        color: "black",
+                        zOffset: 2.0,
+                        xOffset: -0.5,  // 向左偏移避免重叠
+                        sele: selection || "all"
+                    });
+                }
+                
+                // Add labels for atom indices if checked (1-based per frame)
+                if (toggleIndices.checked) {
+                    const structure = currentComponent.structure;
+                    const selStr = totalFrames > 1 ? `/${currentFrame}` : 'all';
+                    const sel = new NGL.Selection(selStr);
+
+                    // Build a Shape-based label component to avoid any ordering/selection ambiguity
+                    try {
+                        const shape = new NGL.Shape('indexLabels');
+                        let n = 0;
+                        structure.eachAtom(a => {
+                            const pos = [a.x, a.y, a.z];
+                            const text = String(++n);
+                            // RGB in 0..1 range
+                            shape.addLabel(pos, [0.0, 0.0, 1.0], 1.2, text);
+                        }, sel);
+                        console.log('IndexLabel(frame', currentFrame, ') count =', n);
+                        if (n > 0) {
+                            indexLabelComponent = stage.addComponentFromObject(shape);
+                            indexLabelComponent.addRepresentation('buffer');
+                        }
+                    } catch (e) {
+                        console.warn('Shape-based index label generation failed', e);
+                    }
+                } else {
+                    if (indexLabelComponent) { indexLabelComponent.dispose(); indexLabelComponent = null; }
+                }
+
+                // Auto-center the view
+                if (selection) {
+                    currentComponent.autoView(selection);
+                } else {
+                    currentComponent.autoView();
+                }
+            }
+
+            toggleSymbols.addEventListener("change", renderCurrentFrame);
+            toggleIndices.addEventListener("change", renderCurrentFrame);
+            
+            toggleTitle.addEventListener("change", function() {
+                updateTitleDisplay();
+            });
+            
+            toggleLog.addEventListener("change", function() {
+                logArea.style.display = this.checked ? 'block' : 'none';
+            });
+
+            function navigateFrames(offset) {
+                const newFrame = currentFrame + offset;
+                if (newFrame >= 0 && newFrame < totalFrames) {
+                    currentFrame = newFrame;
+                    renderCurrentFrame();
+                    updateFrameUI();
+                    updateTitleDisplay();
+                }
+            }
+            
+            function updateTitleDisplay() {
+                if (totalFrames > 0 && frameTitles.length > currentFrame) {
+                    if (toggleTitle.checked) {
+                        titleDisplay.style.display = 'block';
+                        titleDisplay.textContent = `Frame Title: ${frameTitles[currentFrame]}`;
+                    } else {
+                        titleDisplay.style.display = 'none';
+                    }
+                } else {
+                    titleDisplay.style.display = 'block';
+                    titleDisplay.textContent = "Frame Title: Not loaded";
+                }
+            }
+            
+            function addToLog(list, title) {
+                const item = document.createElement('div');
+                item.textContent = title;
+                list.appendChild(item);
+                list.scrollTop = list.scrollHeight;
+            }
+            
+            function goToNextFrame() {
+                if (currentFrame < totalFrames - 1) {
+                    navigateFrames(1);
+                }
+            }
+
+            prevBtn.addEventListener("click", () => navigateFrames(-1));
+            nextBtn.addEventListener("click", () => navigateFrames(1));
+
+            function updateFrameUI() {
+                if (totalFrames > 0) {
+                    frameInfo.textContent = `Frame ${currentFrame + 1} / ${totalFrames}`;
+                } else {
+                    frameInfo.textContent = "No file loaded";
+                }
+                prevBtn.disabled = totalFrames <= 1 || currentFrame === 0;
+                nextBtn.disabled = totalFrames <= 1 || currentFrame === totalFrames - 1;
+            }
+            
+            // Keyboard event listeners
+            document.addEventListener('keydown', function(event) {
+                // Prevent action if user is typing in an input field
+                if (event.target.tagName === 'INPUT') return;
+                
+                switch(event.key.toLowerCase()) {
+                    case 'a':
+                        event.preventDefault();
+                        if (!prevBtn.disabled) {
+                            navigateFrames(-1);
+                        }
+                        break;
+                    case 'd':
+                        event.preventDefault();
+                        if (!nextBtn.disabled) {
+                            navigateFrames(1);
+                        }
+                        break;
+                    case 'h':
+                        event.preventDefault();
+                        if (totalFrames > 0 && frameTitles.length > currentFrame) {
+                            addToLog(acceptList, frameTitles[currentFrame]);
+                            goToNextFrame();
+                        }
+                        break;
+                    case 'u':
+                        event.preventDefault();
+                        if (totalFrames > 0 && frameTitles.length > currentFrame) {
+                            addToLog(declineList, frameTitles[currentFrame]);
+                            goToNextFrame();
+                        }
+                        break;
+                }
+            });
+        });
+    </script>
+</body>
+</html>
